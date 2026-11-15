@@ -72,6 +72,10 @@
     font-size: 12px; font-weight: 700; letter-spacing: 0.4px; white-space: nowrap;
   }
   #main { display: grid; grid-template-columns: 1fr 330px; gap: 10px; min-height: 0; }
+  @media (min-width: 901px) {
+    #app { grid-template-rows: auto auto auto; align-content: center; }
+    #canvas-wrap { aspect-ratio: 8 / 5; align-self: center; }
+  }
   @media (max-width: 900px) {
     #main { display: flex; flex-direction: column; overflow-y: auto; -webkit-overflow-scrolling: touch; }
     #canvas-wrap { flex-shrink: 0; }
@@ -86,9 +90,9 @@
     #topbar { justify-content: space-around; }
     .stat { gap: 5px; } .stat .label { display: none; }
     .hint-text { display: none; }
-    #bottombar { justify-content: center; }
+    #bottombar { justify-content: center; padding: 8px 10px; }
     #tabs { gap: 2px; padding: 6px; }
-    .tab { font-size: 11.5px; gap: 3px; }
+    .tab { font-size: 11.5px; gap: 3px; min-height: 42px; }
     .tab .tab-ic svg { width: 14px; height: 14px; }
   }
   #canvas-wrap {
@@ -96,8 +100,9 @@
     display: flex; align-items: center; justify-content: center;
     overflow: hidden; position: relative;
     box-shadow: var(--shadow); cursor: pointer; border: 1px solid var(--line);
+    width: 100%; aspect-ratio: 8 / 5; max-height: 100%; min-height: 0;
   }
-  canvas { max-width: 100%; max-height: 100%; display: block; touch-action: none; }
+  canvas { width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; display: block; touch-action: none; }
   #side {
     background: var(--panel); border-radius: var(--radius);
     display: flex; flex-direction: column; overflow: hidden;
@@ -414,6 +419,14 @@
     .modal-content { padding: 14px; }
     .modal-content h3 { font-size: 16px; }
   }
+  /* 移动端触控目标加大（置于末尾以确保覆盖生效） */
+  @media (max-width: 600px) {
+    .speed-btn { min-width: 46px; height: 40px; padding: 0 10px; font-size: 13px; }
+    .gear-btn { width: 46px; height: 40px; }
+    .tab { min-height: 42px; }
+    .btn { min-height: 38px; }
+    .modal-content .btn { min-height: 38px; }
+  }
 </style>
 </head>
 <body>
@@ -729,7 +742,7 @@ const SHELF_PLAN = [
   ['water','noodle','chips'], ['cola','bread','icecream'], ['coffee','riceball','tissue'],
 ];
 const SHELF_SLOTS = [
-  [50,50],[50,110],[50,170],[50,230],[530,50],[530,110],[530,170],[530,230],[290,280],
+  [50,50],[50,110],[530,50],[530,110],[50,170],[530,170],[290,280],[50,230],[530,230],
 ];
 function buildShelves(level){
   const cnt=SHOP_LEVELS[Math.min(Math.max(level,1),4)-1].shelves;
@@ -784,7 +797,7 @@ const G = {
   staff:JSON.parse(JSON.stringify(STAFF_TYPES)),
   upgrades:JSON.parse(JSON.stringify(UPGRADES)),
   achievements:JSON.parse(JSON.stringify(ACHIEVEMENTS)),
-  customers:[], particles:[], floatTexts:[],
+  customers:[], particles:[], floatTexts:[], queueSeqCounter:0,
   totalCustomers:0, servedCustomers:0, todayServed:0,
   lastTime:0, maxStockBonus:0,
   adBoost:false, adTimer:0, autoRestock:false, decorLevel:0,
@@ -809,7 +822,42 @@ let SHELVES = buildShelves(1);
 const CHECKOUT = { x:620, y:368, w:140, h:92 };
 const CUSTOMER_COLORS = ['#ff7a45','#1f9e6e','#c98a1b','#7c6fd0','#3b8fd9','#f29b2e','#e05b4f','#8d6e63','#78909c','#c26bb8','#43a047','#e8708a'];
 const HAIR_COLORS = ['#3e2723','#212121','#5d4037','#4e342e','#263238','#6d4c41'];
-const MIN_DIST = 28;
+const MIN_DIST = 32;
+
+/* 货架前站位：两排若干列，供顾客各占一位，避免全部挤在同一点 */
+function shelfSpots(shelf){
+  const cols = Math.max(3, Math.floor((shelf.w - 28) / 42) + 1);
+  const out = [];
+  for(let r=0; r<2; r++){
+    for(let i=0; i<cols; i++){
+      out.push({
+        x: shelf.x + 20 + (cols>1 ? i*((shelf.w-40)/(cols-1)) : 0),
+        y: shelf.y + shelf.h + 24 + r*34
+      });
+    }
+  }
+  return out;
+}
+function claimSpot(shelf, me){
+  const list = shelfSpots(shelf);
+  const used = {};
+  G.customers.forEach(c=>{
+    if(c===me || !c.spot) return;
+    if(c.state==='enter' || c.state==='browse') used[c.spot.key]=true;
+  });
+  let best=null, bd=1e9;
+  for(const s of list){
+    const key=Math.round(s.x)+','+Math.round(s.y);
+    if(used[key]) continue;
+    const d=Math.hypot(s.x-me.x, s.y-me.y);
+    if(d<bd){ bd=d; best={x:s.x, y:s.y, key:key}; }
+  }
+  if(!best){
+    const s=list[Math.floor(Math.random()*list.length)];
+    best={x:s.x, y:s.y, key:Math.round(s.x)+','+Math.round(s.y)};
+  }
+  return best;
+}
 /* ================= 音效 ================= */
 let AudioCtx = null;
 function initAudio() {
@@ -1057,7 +1105,7 @@ function hasSave(){ try { return !!localStorage.getItem(SAVE_KEY); } catch(e){ r
 /* ================= 顾客类 ================= */
 class Customer {
   constructor(){
-    this.x=CANVAS_W/2+rand(-15,15);
+    this.x=DOOR_X+rand(16,DOOR_W-16);
     this.y=CANVAS_H-WALL-5;
     this.state='enter';
     this.targetShelf=null; this.targetProduct=null;
@@ -1076,6 +1124,7 @@ class Customer {
     this.mood='happy'; this.slotOffset=rand(-20,20);
     this.isCarrying=false; this.isVip=false;
     this.stuckT=0; this.stuckCheck=0; this.lastX=this.x; this.lastY=this.y;
+    this.spot=null; this.queueSeq=0;
     if(chance(0.04)) { this.isVip=true; this.color='#c98a1b'; this.hatType=6; this.hatColor='#e8622a'; }
   }
   update(dt){
@@ -1095,10 +1144,10 @@ class Customer {
       case 'enter':
         if(!this.targetShelf) this.chooseProduct();
         if(this.targetShelf){
-          const tx=this.targetShelf.x+this.targetShelf.w/2+this.slotOffset;
-          const ty=this.targetShelf.y+this.targetShelf.h+28;
+          if(!this.spot) this.spot=claimSpot(this.targetShelf,this);
+          const tx=this.spot.x, ty=this.spot.y;
           this.isMoving=true; this.moveTo(tx,ty,dt,sm);
-          if(this.distanceTo(tx,ty)<8){
+          if(this.distanceTo(tx,ty)<5){
             this.state='browse'; this.shoppingTimer=rand(700,1900);
           }
         }
@@ -1117,15 +1166,18 @@ class Customer {
               addParticles(this.x,this.y-15,p.color,5);
             }
           } else { this.happiness=0.3; this.mood='sad'; }
+          this.spot=null;
+          if(!this.queueSeq) this.queueSeq=++G.queueSeqCounter;
           this.state='queue';
         }
         break;
       case 'queue':{
-        const queued=G.customers.filter(c=>c.state==='queue'||c.state==='pay');
+        const queued=G.customers.filter(c=>c.state==='queue'||c.state==='pay')
+          .sort((a,b)=>(a.queueSeq||0)-(b.queueSeq||0));
         const idx=queued.indexOf(this);
         const qy=CHECKOUT.y+CHECKOUT.h/2+15;
         const qx=CHECKOUT.x-10-idx*42;
-        const qyy=qy+(idx%2===0?-6:6);
+        const qyy=qy+(idx%2===0?-4:4);
         const dist=this.distanceTo(qx,qyy);
         if(dist>4){ this.isMoving=true; this.moveTo(qx,qyy,dt,sm); }
         else this.isMoving=false;
@@ -1151,7 +1203,7 @@ class Customer {
             else sfxCash();
           }
           G.servedCustomers++;
-          this.isCarrying=false; this.state='leave';
+          this.isCarrying=false; this.queueSeq=0; this.spot=null; this.state='leave';
         }
         break;
       case 'leave':{
@@ -1174,13 +1226,15 @@ class Customer {
     switch(this.state){
       case 'enter':
         if(this.targetShelf){
-          this.x=this.targetShelf.x+this.targetShelf.w/2+this.slotOffset;
-          this.y=this.targetShelf.y+this.targetShelf.h+28;
+          if(!this.spot) this.spot=claimSpot(this.targetShelf,this);
+          this.x=this.spot.x;
+          this.y=this.spot.y;
         }
         this.state='browse'; this.shoppingTimer=rand(700,1900);
         break;
       case 'queue': {
-        const queued=G.customers.filter(c=>c.state==='queue'||c.state==='pay');
+        const queued=G.customers.filter(c=>c.state==='queue'||c.state==='pay')
+          .sort((a,b)=>(a.queueSeq||0)-(b.queueSeq||0));
         const idx=queued.indexOf(this);
         this.x=CHECKOUT.x-10-idx*42;
         this.y=CHECKOUT.y+CHECKOUT.h/2+15+(idx%2===0?-6:6);
@@ -1214,22 +1268,22 @@ class Customer {
     }
   }
   avoidOthers(){
+    if(this.state==='pay'||this.state==='exit') return;
     for(let i=0;i<G.customers.length;i++){
       const o=G.customers[i];
       if(o===this) continue;
       const dx=this.x-o.x, dy=this.y-o.y;
       const d=Math.sqrt(dx*dx+dy*dy);
-      if(d<MIN_DIST && d>0){
-        const push=(MIN_DIST-d)*0.1;
-        this.x+=Math.max(-1.5,Math.min(1.5,(dx/d)*push));
-        this.y+=Math.max(-1.5,Math.min(1.5,(dy/d)*push));
+      if(d<MIN_DIST && d>0.001){
+        const push=Math.min(0.8,(MIN_DIST-d)*0.06);
+        this.x+=(dx/d)*push; this.y+=(dy/d)*push;
       }
     }
   }
   distanceTo(x,y){ return Math.sqrt((this.x-x)**2+(this.y-y)**2); }
   drawThoughtBubble(ctx){
     if(this.state==='browse' && this.targetProduct){
-      const bx=this.x, by=this.y-42;
+      const bx=this.x, by=this.y-50;
       ctx.fillStyle='rgba(255,255,255,0.96)';
       ctx.beginPath(); ctx.arc(bx,by,14,0,Math.PI*2); ctx.fill();
       ctx.strokeStyle='#e4ded2'; ctx.lineWidth=1.2; ctx.stroke();
@@ -1244,7 +1298,7 @@ class Customer {
     /* AI 插画小人优先，加载失败回退矢量 */
     if(imgReady(this.spriteKey)){
       softEllipse(this.x,bodyY+8,11,3.4,0.16);
-      const h=this.isVip?42:36;
+      const h=this.isVip?54:44;
       const w=Math.round(h*IMG[this.spriteKey].width/IMG[this.spriteKey].height);
       ctx.save();
       ctx.translate(this.x,bodyY+8);
@@ -1253,19 +1307,24 @@ class Customer {
       ctx.restore();
       if(this.isVip){
         ctx.fillStyle='rgba(232,98,42,0.95)';
-        ctx.beginPath(); ctx.roundRect(this.x-9,bodyY-44,18,6,3); ctx.fill();
+        ctx.beginPath(); ctx.roundRect(this.x-9,bodyY-56,18,6,3); ctx.fill();
         ctx.fillStyle='#ffd54f';
         for(let i=0;i<3;i++){
           ctx.beginPath();
-          ctx.moveTo(this.x-8+i*6.2,bodyY-38);
-          ctx.lineTo(this.x-5+i*6.2,bodyY-47);
-          ctx.lineTo(this.x-2+i*6.2,bodyY-38);
+          ctx.moveTo(this.x-8+i*6.2,bodyY-50);
+          ctx.lineTo(this.x-5+i*6.2,bodyY-59);
+          ctx.lineTo(this.x-2+i*6.2,bodyY-50);
           ctx.closePath(); ctx.fill();
         }
       }
       if(this.isCarrying && imgReady(this.bought)){
-        const pw=14, ph=14;
-        ctx.drawImage(IMG[this.bought],this.x+w*0.28,bodyY-18,pw,ph);
+        const bx=this.x+w*0.30, by=bodyY-20;
+        /* 手提纸袋 */
+        ctx.fillStyle='#f5e8d2';
+        ctx.beginPath(); ctx.roundRect(bx,by+5,13,11,2.5); ctx.fill();
+        ctx.strokeStyle='rgba(150,110,60,0.45)'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(bx+3.5,by+5); ctx.quadraticCurveTo(bx+6.5,by-1,bx+9.5,by+5); ctx.stroke();
+        ctx.drawImage(IMG[this.bought],bx+1.5,by,10,10);
       }
       return;
     }
@@ -1625,46 +1684,60 @@ function drawWalls(){
   ctx.restore();
 }
 function drawDoor(){
+  const x0=DOOR_X, dw=DOOR_W, dh=46, dy0=CANVAS_H-dh;
+  /* 门外透进来的暖光 */
+  const glow=ctx.createRadialGradient(x0+dw/2,CANVAS_H-8,10,x0+dw/2,CANVAS_H-8,120);
+  glow.addColorStop(0,'rgba(255,220,160,0.50)');
+  glow.addColorStop(0.55,'rgba(255,220,160,0.16)');
+  glow.addColorStop(1,'rgba(255,220,160,0)');
+  ctx.fillStyle=glow;
+  ctx.beginPath(); ctx.ellipse(x0+dw/2,CANVAS_H-4,105,62,0,0,Math.PI*2); ctx.fill();
   /* 门框 */
-  const g=ctx.createLinearGradient(DOOR_X,0,DOOR_X+DOOR_W,0);
-  g.addColorStop(0,'#7a5230'); g.addColorStop(0.5,'#96683e'); g.addColorStop(1,'#7a5230');
-  ctx.fillStyle=g;
-  ctx.beginPath(); ctx.roundRect(DOOR_X-3,CANVAS_H-WALL-3,DOOR_W+6,WALL+6,4); ctx.fill();
-  /* 玻璃门扇 */
-  const dg=ctx.createLinearGradient(DOOR_X,0,DOOR_X+DOOR_W,0);
-  dg.addColorStop(0,'#cfe4f5'); dg.addColorStop(0.5,'#eaf4fb'); dg.addColorStop(1,'#cfe4f5');
-  ctx.fillStyle=dg;
-  ctx.fillRect(DOOR_X+1,CANVAS_H-WALL-1,DOOR_W-2,WALL-4);
-  /* 玻璃高光 */
-  ctx.fillStyle='rgba(255,255,255,0.6)';
-  ctx.beginPath();
-  ctx.moveTo(DOOR_X+10,CANVAS_H-WALL+4); ctx.lineTo(DOOR_X+22,CANVAS_H-WALL-2);
-  ctx.lineTo(DOOR_X+15,CANVAS_H-WALL-2); ctx.lineTo(DOOR_X+4,CANVAS_H-WALL+4);
-  ctx.closePath(); ctx.fill();
-  /* 门把 */
-  ctx.fillStyle='#f2c14e';
-  ctx.beginPath(); ctx.arc(DOOR_X+DOOR_W-12,CANVAS_H-WALL-10,3,0,Math.PI*2); ctx.fill();
-  ctx.strokeStyle='#c98a1b'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.arc(DOOR_X+DOOR_W-12,CANVAS_H-WALL-10,3,0,Math.PI*2); ctx.stroke();
+  ctx.save();
+  ctx.shadowColor='rgba(70,45,20,0.30)'; ctx.shadowBlur=10; ctx.shadowOffsetY=3;
+  const fg=ctx.createLinearGradient(0,dy0-5,0,CANVAS_H);
+  fg.addColorStop(0,'#9a6a3c'); fg.addColorStop(1,'#7a5230');
+  ctx.fillStyle=fg;
+  ctx.beginPath(); ctx.roundRect(x0-9,dy0-5,dw+18,dh+8,8); ctx.fill();
+  ctx.restore();
+  /* 两扇玻璃门 */
+  const gx=x0+2, gy=dy0+4, gh=dh-8, half=(dw-6)/2;
+  [[gx,gh],[gx+half+2,gh]].forEach(([bx,bh])=>{
+    const bxw=half-1;
+    const dg=ctx.createLinearGradient(bx,gy,bx+bxw,gy+bh);
+    dg.addColorStop(0,'#eaf3fb'); dg.addColorStop(0.45,'#cddff0'); dg.addColorStop(1,'#eef6fc');
+    ctx.fillStyle=dg;
+    ctx.beginPath(); ctx.roundRect(bx,gy,bxw,bh,3); ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.55)';
+    ctx.beginPath();
+    ctx.moveTo(bx+6,gy+bh-3); ctx.lineTo(bx+18,gy+2); ctx.lineTo(bx+25,gy+2); ctx.lineTo(bx+13,gy+bh-3);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle='rgba(120,95,60,0.35)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.roundRect(bx,gy,bxw,bh,3); ctx.stroke();
+  });
+  /* 门把手 */
+  ctx.fillStyle='#d8a45c';
+  ctx.beginPath(); ctx.roundRect(gx+half-11,dy0+dh*0.52,9,2.6,1.3); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(gx+half+2,dy0+dh*0.52,9,2.6,1.3); ctx.fill();
   /* 门眉小招牌 */
   ctx.save();
   ctx.shadowColor='rgba(60,45,25,0.25)'; ctx.shadowBlur=5; ctx.shadowOffsetY=1.5;
   ctx.fillStyle='#fff8ec';
-  ctx.beginPath(); ctx.roundRect(DOOR_X+DOOR_W/2-22,CANVAS_H-WALL-24,44,15,5); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(x0+dw/2-26,dy0-22,52,16,6); ctx.fill();
   ctx.shadowColor='transparent';
   ctx.strokeStyle='rgba(232,98,42,0.45)'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.roundRect(DOOR_X+DOOR_W/2-22,CANVAS_H-WALL-24,44,15,5); ctx.stroke();
+  ctx.beginPath(); ctx.roundRect(x0+dw/2-26,dy0-22,52,16,6); ctx.stroke();
   ctx.fillStyle='#e8622a';
   ctx.font='bold 9px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('出 入',DOOR_X+DOOR_W/2,CANVAS_H-WALL-16);
+  ctx.fillText('自 动 门',x0+dw/2,dy0-13.5);
   ctx.restore();
   /* 门口地垫 */
-  const mg=ctx.createLinearGradient(0,CANVAS_H-WALL,0,CANVAS_H-WALL+6);
-  mg.addColorStop(0,'#c98a1b'); mg.addColorStop(1,'#a96f13');
+  const mg=ctx.createLinearGradient(0,CANVAS_H-8,0,CANVAS_H);
+  mg.addColorStop(0,'#d7a44c'); mg.addColorStop(1,'#a96f13');
   ctx.fillStyle=mg;
-  ctx.beginPath(); ctx.roundRect(DOOR_X-14,CANVAS_H-WALL,DOOR_W+28,6,3); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(x0-14,CANVAS_H-8,dw+28,8,4); ctx.fill();
   ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.roundRect(DOOR_X-14,CANVAS_H-WALL,DOOR_W+28,6,3); ctx.stroke();
+  ctx.beginPath(); ctx.roundRect(x0-14,CANVAS_H-8,dw+28,8,4); ctx.stroke();
 }
 function drawShelfShadow(s){
   const g=ctx.createRadialGradient(s.x+s.w/2,s.y+s.h+10,4,s.x+s.w/2,s.y+s.h+10,s.w*0.55);
@@ -1728,8 +1801,8 @@ function drawShelves(){
         return;
       }
       /* 商品投影 */
-      softEllipse(cx,shelf.y-1,9,3,0.20);
-      drawProductImg(ctx,pid,cx-16,shelf.y-27,32,26,p.icon);
+      softEllipse(cx,shelf.y+3,9,3,0.20);
+      drawProductImg(ctx,pid,cx-17,shelf.y-21,34,27,p.icon);
       /* 价签 */
       ctx.save();
       ctx.translate(cx,shelf.y+shelf.h-9);
@@ -1767,33 +1840,60 @@ function drawCheckout(){
   ctx.beginPath(); ctx.roundRect(CHECKOUT.x-28,CHECKOUT.y+CHECKOUT.h-2,CHECKOUT.w+56,14,7); ctx.fill();
   ctx.strokeStyle='rgba(150,110,60,0.25)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.roundRect(CHECKOUT.x-28,CHECKOUT.y+CHECKOUT.h-2,CHECKOUT.w+56,14,7); ctx.stroke();
+  /* 排队引导虚线 */
+  ctx.save();
+  ctx.strokeStyle='rgba(255,255,255,0.55)'; ctx.lineWidth=2; ctx.setLineDash([7,8]);
+  ctx.beginPath();
+  ctx.moveTo(CHECKOUT.x-16,CHECKOUT.y+CHECKOUT.h/2+15);
+  ctx.lineTo(CHECKOUT.x-230,CHECKOUT.y+CHECKOUT.h/2+15);
+  ctx.stroke();
+  ctx.restore();
   /* 柜台主体 */
   const g=ctx.createLinearGradient(0,CHECKOUT.y,0,CHECKOUT.y+CHECKOUT.h);
-  g.addColorStop(0,'#8fc3ea'); g.addColorStop(0.35,'#63a9e0'); g.addColorStop(1,'#3f7fba');
+  g.addColorStop(0,'#f2d7b0'); g.addColorStop(0.35,'#d9ab72'); g.addColorStop(1,'#a97a45');
   ctx.save();
-  ctx.shadowColor='rgba(40,70,110,0.35)'; ctx.shadowBlur=14; ctx.shadowOffsetY=5;
+  ctx.shadowColor='rgba(90,60,25,0.32)'; ctx.shadowBlur=14; ctx.shadowOffsetY=5;
   ctx.fillStyle=g;
   ctx.beginPath(); ctx.roundRect(CHECKOUT.x,CHECKOUT.y,CHECKOUT.w,CHECKOUT.h,12); ctx.fill();
   ctx.shadowColor='transparent';
+  /* 木纹细线 */
+  ctx.strokeStyle='rgba(120,78,35,0.18)'; ctx.lineWidth=1;
+  for(let ly=CHECKOUT.y+26; ly<CHECKOUT.y+CHECKOUT.h-8; ly+=13){
+    ctx.beginPath(); ctx.moveTo(CHECKOUT.x+10,ly); ctx.lineTo(CHECKOUT.x+CHECKOUT.w-10,ly+1.5); ctx.stroke();
+  }
   /* 台面高光 */
   ctx.fillStyle='rgba(255,255,255,0.35)';
   ctx.beginPath(); ctx.roundRect(CHECKOUT.x+4,CHECKOUT.y+3,CHECKOUT.w-8,7,4); ctx.fill();
   /* 左侧小标签 */
-  ctx.fillStyle='rgba(20,45,80,0.25)';
+  ctx.fillStyle='rgba(90,55,20,0.42)';
   ctx.font='bold 9px sans-serif'; ctx.textAlign='left'; ctx.textBaseline='middle';
   ctx.fillText('收银台',CHECKOUT.x+13,CHECKOUT.y+16);
   /* 收银屏 */
   const sc=ctx.createLinearGradient(0,CHECKOUT.y+26,0,CHECKOUT.y+52);
-  sc.addColorStop(0,'#223c52'); sc.addColorStop(1,'#16283a');
+  sc.addColorStop(0,'#3a2c22'); sc.addColorStop(1,'#241a14');
   ctx.fillStyle=sc;
   ctx.beginPath(); ctx.roundRect(CHECKOUT.x+CHECKOUT.w-58,CHECKOUT.y+24,48,26,6); ctx.fill();
-  ctx.strokeStyle='rgba(90,160,220,0.5)'; ctx.lineWidth=1.2;
+  ctx.strokeStyle='rgba(255,196,130,0.55)'; ctx.lineWidth=1.2;
   ctx.beginPath(); ctx.roundRect(CHECKOUT.x+CHECKOUT.w-58,CHECKOUT.y+24,48,26,6); ctx.stroke();
-  ctx.fillStyle='#4dd0e1';
+  ctx.fillStyle='#ffd08a';
   ctx.font='bold 11px sans-serif'; ctx.textAlign='center';
   ctx.fillText('¥'+Math.floor(G.todayIncome),CHECKOUT.x+CHECKOUT.w-34,CHECKOUT.y+37);
-  ctx.fillStyle='rgba(77,208,225,0.25)';
+  ctx.fillStyle='rgba(255,190,120,0.14)';
   ctx.beginPath(); ctx.roundRect(CHECKOUT.x+CHECKOUT.w-58,CHECKOUT.y+24,48,26,6); ctx.fill();
+  /* 收银机机身与键盘 */
+  ctx.fillStyle='#3d3026';
+  ctx.beginPath(); ctx.roundRect(CHECKOUT.x+CHECKOUT.w-66,CHECKOUT.y+48,64,19,5); ctx.fill();
+  ctx.fillStyle='#efe6d8';
+  ctx.beginPath(); ctx.roundRect(CHECKOUT.x+CHECKOUT.w-61,CHECKOUT.y+51,54,12,3); ctx.fill();
+  for(let r=0;r<2;r++) for(let c=0;c<9;c++){
+    ctx.fillStyle='rgba(120,95,60,0.38)';
+    ctx.beginPath(); ctx.roundRect(CHECKOUT.x+CHECKOUT.w-58+c*5.8,CHECKOUT.y+52.6+r*5,3.8,3.2,1); ctx.fill();
+  }
+  /* 小票 */
+  ctx.fillStyle='#fffdf7';
+  ctx.beginPath(); ctx.roundRect(CHECKOUT.x+CHECKOUT.w-16,CHECKOUT.y+38,11,16,1.5); ctx.fill();
+  ctx.strokeStyle='rgba(150,120,80,0.4)'; ctx.lineWidth=0.8;
+  for(let i=0;i<3;i++){ ctx.beginPath(); ctx.moveTo(CHECKOUT.x+CHECKOUT.w-14,CHECKOUT.y+42+i*3.4); ctx.lineTo(CHECKOUT.x+CHECKOUT.w-7,CHECKOUT.y+42+i*3.4); ctx.stroke(); }
   ctx.restore();
   /* 员工 */
   const cc=G.staff.find(s=>s.id==='cashier').count;
@@ -1807,7 +1907,7 @@ function drawStaff(x,y,imgKey,color){
   const bob=G.speed>0?Math.sin(G.gameTime*0.001)*0.5:0;
   if(imgKey && imgReady(imgKey)){
     softEllipse(x,y+4,10,3.2,0.18);
-    const h=30,w=Math.round(h*IMG[imgKey].width/IMG[imgKey].height);
+    const h=34,w=Math.round(h*IMG[imgKey].width/IMG[imgKey].height);
     ctx.drawImage(IMG[imgKey],x-w/2,y-h+4,w,h);
     return;
   }
